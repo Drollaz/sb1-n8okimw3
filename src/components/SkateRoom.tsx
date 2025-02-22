@@ -68,67 +68,41 @@ function SkateRoom() {
 
       if (gearError) throw gearError;
 
-      // Fetch details for each category
-      const updatedCategories = [...initialCategories];
+      // Reset categories with fresh copies
+      const updatedCategories = initialCategories.map(category => ({
+        ...category,
+        items: [], // Reset items array
+        count: 0   // Reset count
+      }));
 
       for (const gear of gearData || []) {
         const category = updatedCategories.find(c => c.type === gear.category);
         if (!category) continue;
 
         // Fetch specific details based on category
-        let details;
-        switch (gear.category) {
-          case 'deck':
-            const { data: deckDetails } = await supabase
-              .from('deck_details')
-              .select('*')
-              .eq('gear_id', gear.id)
-              .single();
-            details = deckDetails;
-            break;
-          case 'truck':
-            const { data: truckDetails } = await supabase
-              .from('truck_details')
-              .select('*')
-              .eq('gear_id', gear.id)
-              .single();
-            details = truckDetails;
-            break;
-          case 'wheel':
-            const { data: wheelDetails } = await supabase
-              .from('wheel_details')
-              .select('*')
-              .eq('gear_id', gear.id)
-              .single();
-            details = wheelDetails;
-            break;
-          case 'bearing':
-            const { data: bearingDetails } = await supabase
-              .from('bearing_details')
-              .select('*')
-              .eq('gear_id', gear.id)
-              .single();
-            details = bearingDetails;
-            break;
-          case 'griptape':
-            const { data: griptapeDetails } = await supabase
-              .from('griptape_details')
-              .select('*')
-              .eq('gear_id', gear.id)
-              .single();
-            details = griptapeDetails;
-            break;
-          case 'tool':
-            const { data: toolDetails } = await supabase
-              .from('tool_details')
-              .select('*')
-              .eq('gear_id', gear.id)
-              .single();
-            details = toolDetails;
-            break;
+        let details = null;
+        const detailsTable = `${gear.category}_details`;
+        
+        const { data: detailsData, error: detailsError } = await supabase
+          .from(detailsTable)
+          .select('*')
+          .eq('gear_id', gear.id)
+          .maybeSingle(); // Use maybeSingle() instead of single()
+
+        if (detailsError) {
+          console.warn(`Error fetching details for ${gear.category}:`, detailsError);
+        } else {
+          details = detailsData;
         }
 
-        category.items.push({ ...gear, details });
+        // Add the item even if details are null
+        category.items.push({ 
+          ...gear, 
+          details: details || { 
+            image_url: '',
+            price: 0
+          } 
+        });
         category.count++;
       }
 
@@ -151,9 +125,7 @@ function SkateRoom() {
           user_id: user.id,
           category: newItem.category,
           name: newItem.name,
-          brand: newItem.brand,
           specs: newItem.specs,
-          image_url: newItem.image_url
         }])
         .select()
         .single();
@@ -161,16 +133,17 @@ function SkateRoom() {
       if (gearError) throw gearError;
 
       // Insert category-specific details
-      if (gearData) {
-        const details = newItem.details;
-        if (details) {
-          const detailsTable = `${newItem.category}_details`;
-          const { error: detailsError } = await supabase
-            .from(detailsTable)
-            .insert([{ gear_id: gearData.id, ...details }]);
+      if (gearData && newItem.details) {
+        const detailsTable = `${newItem.category}_details`;
+        const { error: detailsError } = await supabase
+          .from(detailsTable)
+          .insert([{ 
+            gear_id: gearData.id,
+            image_url: newItem.details.image_url,
+            price: newItem.details.price,
+          }]);
 
-          if (detailsError) throw detailsError;
-        }
+        if (detailsError) throw detailsError;
       }
 
       // Refresh gear list
@@ -190,9 +163,7 @@ function SkateRoom() {
         .from('skate_gear')
         .update({
           name: updatedItem.name,
-          brand: updatedItem.brand,
-          specs: updatedItem.specs,
-          image_url: updatedItem.image_url
+      
         })
         .eq('id', oldItem.id);
 
@@ -203,7 +174,11 @@ function SkateRoom() {
         const detailsTable = `${oldItem.category}_details`;
         const { error: detailsError } = await supabase
           .from(detailsTable)
-          .update(updatedItem.details)
+          .update({
+            ...updatedItem.details,
+            brand: updatedItem.details.brand,
+            image_url: updatedItem.details.image_url
+          })
           .eq('gear_id', oldItem.id);
 
         if (detailsError) throw detailsError;
@@ -235,7 +210,20 @@ function SkateRoom() {
 
   const ItemForm = ({ 
     onSubmit, 
-    initialValues = { name: '', brand: '', specs: '', image_url: '' },
+    initialValues = { 
+      name: '', 
+      specs: '',
+      details: {
+        brand: '',
+        model: '',
+        size: '',
+        image_url: '',
+        price: 0,
+        currently_using: 'No' as UsageStatus,
+        condition: 'New' as ConditionStatus,
+        purchase_date: ''
+      }
+    },
     categoryName,
     mode = 'add'
   }: {
@@ -245,37 +233,64 @@ function SkateRoom() {
     mode?: 'add' | 'edit';
   }) => {
     const [formData, setFormData] = useState(initialValues);
-    const isDeck = categoryName === "Decks";
-
+    
     const handleSubmit = (e: React.FormEvent) => {
       e.preventDefault();
       onSubmit(formData);
     };
 
-    const renderDeckFields = () => {
-      if (!isDeck) return null;
-
-      const details = formData.details as DeckDetails;
-
+    const renderCommonFields = () => {
+      const details = formData.details || {};
+      
       return (
         <>
           <div>
-            <label className="block text-sm font-medium text-gray-400 mb-1">Model</label>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Brand *</label>
             <input
               type="text"
-              value={details?.model || ''}
+              value={details.brand || ''}
               onChange={e => setFormData({
                 ...formData,
-                details: { ...details, model: e.target.value }
+                details: { ...details, brand: e.target.value }
               })}
               className="w-full bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
               required
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-400 mb-1">Size</label>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Specifications (Optional)</label>
+            <input
+              type="text"
+              value={formData.specs || ''}
+              onChange={e => setFormData({ ...formData, specs: e.target.value })}
+              className="w-full bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
+            />
+          </div>
+        </>
+      );
+    };
+
+    const renderDeckFields = () => {
+      const details = formData.details || {};
+      
+      return (
+        <>
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Model (Optional)</label>
+            <input
+              type="text"
+              value={details.model || ''}
+              onChange={e => setFormData({
+                ...formData,
+                details: { ...details, model: e.target.value }
+              })}
+              className="w-full bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Size *</label>
             <select
-              value={details?.size || '8.0'}
+              value={details.size || '8.0'}
               onChange={e => setFormData({
                 ...formData,
                 details: { ...details, size: e.target.value }
@@ -289,47 +304,49 @@ function SkateRoom() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-400 mb-1">Price</label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <DollarSign className="h-4 w-4 text-gray-500" />
-              </div>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={details?.price || ''}
-                onChange={e => setFormData({
-                  ...formData,
-                  details: { ...details, price: parseFloat(e.target.value) }
-                })}
-                className="w-full pl-9 bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
-                required
-              />
-            </div>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Purchase Date (Optional)</label>
+            <input
+              type="date"
+              value={details.purchase_date || ''}
+              onChange={e => setFormData({
+                ...formData,
+                details: { ...details, purchase_date: e.target.value }
+              })}
+              className="w-full bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
+            />
           </div>
+        </>
+      );
+    };
+
+    const renderWheelsFields = () => {
+      const details = formData.details || {};
+      
+      return (
+        <div>
+          <label className="block text-sm font-medium text-gray-400 mb-1">Size (Optional)</label>
+          <input
+            type="text"
+            value={details.size || ''}
+            onChange={e => setFormData({
+              ...formData,
+              details: { ...details, size: e.target.value }
+            })}
+            className="w-full bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
+          />
+        </div>
+      );
+    };
+
+    const renderUsageAndCondition = () => {
+      const details = formData.details || {};
+      
+      return (
+        <>
           <div>
-            <label className="block text-sm font-medium text-gray-400 mb-1">Purchase Date</label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Calendar className="h-4 w-4 text-gray-500" />
-              </div>
-              <input
-                type="date"
-                value={details?.purchase_date || ''}
-                onChange={e => setFormData({
-                  ...formData,
-                  details: { ...details, purchase_date: e.target.value }
-                })}
-                className="w-full pl-9 bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
-                required
-              />
-            </div>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-400 mb-1">Currently Using</label>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Currently Using *</label>
             <select
-              value={details?.currently_using || 'No'}
+              value={details.currently_using || 'No'}
               onChange={e => setFormData({
                 ...formData,
                 details: { ...details, currently_using: e.target.value as UsageStatus }
@@ -343,15 +360,14 @@ function SkateRoom() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-400 mb-1">Condition</label>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Condition (Optional)</label>
             <select
-              value={details?.condition || 'New'}
+              value={details.condition || 'New'}
               onChange={e => setFormData({
                 ...formData,
                 details: { ...details, condition: e.target.value as ConditionStatus }
               })}
               className="w-full bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
-              required
             >
               {CONDITION_STATUS.map(status => (
                 <option key={status} value={status}>{status}</option>
@@ -362,10 +378,50 @@ function SkateRoom() {
       );
     };
 
+    const renderOptionalFields = () => {
+      const details = formData.details || {};
+      
+      return (
+        <>
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Image URL (Optional)</label>
+            <input
+              type="url"
+              value={details.image_url || ''}
+              onChange={e => setFormData({
+                ...formData,
+                details: { ...details, image_url: e.target.value }
+              })}
+              className="w-full bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Price (Optional)</label>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <DollarSign className="h-4 w-4 text-gray-500" />
+              </div>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={details.price || ''}
+                onChange={e => setFormData({
+                  ...formData,
+                  details: { ...details, price: parseFloat(e.target.value) }
+                })}
+                className="w-full pl-9 bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
+              />
+            </div>
+          </div>
+        </>
+      );
+    };
+
     return (
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-gray-400 mb-1">Name</label>
+          <label className="block text-sm font-medium text-gray-400 mb-1">Name *</label>
           <input
             type="text"
             value={formData.name}
@@ -374,37 +430,16 @@ function SkateRoom() {
             required
           />
         </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-400 mb-1">Brand</label>
-          <input
-            type="text"
-            value={formData.brand}
-            onChange={e => setFormData({ ...formData, brand: e.target.value })}
-            className="w-full bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
-            required
-          />
-        </div>
-        {renderDeckFields()}
-        <div>
-          <label className="block text-sm font-medium text-gray-400 mb-1">Specifications</label>
-          <input
-            type="text"
-            value={formData.specs}
-            onChange={e => setFormData({ ...formData, specs: e.target.value })}
-            className="w-full bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
-            required
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-400 mb-1">Image URL</label>
-          <input
-            type="url"
-            value={formData.image_url}
-            onChange={e => setFormData({ ...formData, image_url: e.target.value })}
-            className="w-full bg-gray-800/50 border border-white/5 rounded-xl py-2 px-3 text-white"
-            required
-          />
-        </div>
+        
+        {renderCommonFields()}
+        
+        {categoryName === "Decks" && renderDeckFields()}
+        {categoryName === "Wheels" && renderWheelsFields()}
+        
+        {categoryName !== "Tools" && renderUsageAndCondition()}
+        
+        {renderOptionalFields()}
+
         <div className="flex gap-3">
           <button
             type="submit"
@@ -425,48 +460,37 @@ function SkateRoom() {
   };
 
   const renderItemDetails = (item: GearWithDetails) => {
-    if (item.category === 'deck') {
-      const details = item.details as DeckDetails;
-      return (
-        <>
-          <h3 className="font-medium text-white">{item.name}</h3>
-          <p className="text-sm text-gray-400">{item.brand} - {details.model}</p>
-          <p className="text-sm text-gray-500">{item.specs}</p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-500/10 text-indigo-400">
-              {details.size}"
-            </span>
-            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-500/10 text-indigo-400">
-              ${details.price}
-            </span>
-            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-              details.currently_using === 'Yes' 
-                ? 'bg-green-500/10 text-green-400'
-                : details.currently_using === 'Stock'
-                ? 'bg-yellow-500/10 text-yellow-400'
-                : 'bg-gray-500/10 text-gray-400'
-            }`}>
-              {details.currently_using}
-            </span>
-            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-              details.condition === 'New'
-                ? 'bg-green-500/10 text-green-400'
-                : details.condition === 'Poor'
-                ? 'bg-yellow-500/10 text-yellow-400'
-                : 'bg-red-500/10 text-red-400'
-            }`}>
-              {details.condition}
-            </span>
-          </div>
-        </>
-      );
-    }
-
+    const details = item.details || {};
     return (
       <>
         <h3 className="font-medium text-white">{item.name}</h3>
-        <p className="text-sm text-gray-400">{item.brand}</p>
-        <p className="text-sm text-gray-500">{item.specs}</p>
+        {details.brand && <p className="text-sm text-gray-400">{details.brand}</p>}
+        {item.specs && <p className="text-sm text-gray-500">{item.specs}</p>}
+        <div className="mt-2 flex flex-wrap gap-2">
+          {details.price > 0 && (
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-500/10 text-indigo-400">
+              ${details.price}
+            </span>
+          )}
+          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+            details.currently_using === 'Yes' 
+              ? 'bg-green-500/10 text-green-400'
+              : details.currently_using === 'Stock'
+              ? 'bg-yellow-500/10 text-yellow-400'
+              : 'bg-gray-500/10 text-gray-400'
+          }`}>
+            {details.currently_using}
+          </span>
+          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+            details.condition === 'New'
+              ? 'bg-green-500/10 text-green-400'
+              : details.condition === 'Poor'
+              ? 'bg-yellow-500/10 text-yellow-400'
+              : 'bg-red-500/10 text-red-400'
+          }`}>
+            {details.condition}
+          </span>
+        </div>
       </>
     );
   };
@@ -577,7 +601,7 @@ function SkateRoom() {
 
               {selectedCategory && (
                 <ItemForm
-                  onSubmit={(newItem) => handleAddItem(selectedCategory.name, newItem)}
+                  onSubmit={(newItem) => handleAddItem(selectedCategory.name, { ...newItem, category: selectedCategory.type })}
                   categoryName={selectedCategory.name}
                   mode="add"
                 />
@@ -626,9 +650,13 @@ function SkateRoom() {
                     <div className="flex gap-3 sm:gap-4">
                       <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-lg overflow-hidden flex-shrink-0">
                         <img
-                          src={item.image_url}
+                          src={item.details?.image_url || 'https://images.unsplash.com/photo-1564982752979-3f7bc974d29a?auto=format&fit=crop&q=80&w=200&h=200'}
                           alt={item.name}
                           className="w-full h-full object-cover"
+                          onError={(e) => {
+                            // Fallback to placeholder if image fails to load
+                            (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1564982752979-3f7bc974d29a?auto=format&fit=crop&q=80&w=200&h=200';
+                          }}
                         />
                       </div>
                       <div className="flex-1 min-w-0">
@@ -667,7 +695,12 @@ function SkateRoom() {
           <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
             <div className="bg-gray-900/90 rounded-xl sm:rounded-2xl p-4 sm:p-6 w-full max-w-md my-4">
               <div className="flex items-center justify-between mb-4 sm:mb-6">
-                <h2 className="text-lg sm:text-xl font-bold text-white">Edit {editingItem.categoryName.slice(0, -1)}</h2>
+                <div className="flex items-center gap-3">
+                  <div className="p-2 sm:p-2.5 rounded-lg sm:rounded-xl bg-indigo-500/10 text-indigo-400">
+                    <Edit2 size={20} className="sm:w-6 sm:h-6" />
+                  </div>
+                  <h2 className="text-lg sm:text-xl font-bold text-white">Edit {editingItem.categoryName.slice(0, -1)}</h2>
+                </div>
                 <button
                   onClick={() => setEditingItem(null)}
                   className="text-gray-500 hover:text-white transition-colors p-1"
